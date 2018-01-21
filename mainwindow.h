@@ -5,8 +5,6 @@
 #include <QFileDialog>
 #include <QImageReader>
 
-#include <QElapsedTimer>
-
 #include "glblurfunctions.h"
 
 namespace Ui {
@@ -23,8 +21,8 @@ public:
 
 private slots:
     void on_buttonOpenFile_clicked();
-    void on_sliderOffset_valueChanged(int value);
     void on_spinBoxIterations_valueChanged(int arg1);
+    void on_spinBoxOffset_valueChanged(int arg1);
 
 private:
     Ui::MainWindow *ui;
@@ -32,14 +30,13 @@ private:
     int offset;
     int iterations;
 
-    GLBlurFunctions GLBluring;
+    GLBlurFunctions GLBlurDualKawase;
     QImage originalImage;
     QImage shownImage;
 
-    QElapsedTimer timer;
-
     void resizeEvent(QResizeEvent *event);
-    void updateWindowImages();
+    void showBlurredImage();
+    void updateShownImage();
 };
 
 #endif // MAINWINDOW_H

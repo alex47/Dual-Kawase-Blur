@@ -22,8 +22,6 @@ GLBlurFunctions::GLBlurFunctions()
 
     initializeOpenGLFunctions();
 
-    glClearColor(0.1f, 0.2f, 0.3f, 1.0f);
-
     m_ShaderProgram_kawase_up = new QOpenGLShaderProgram();
     m_ShaderProgram_kawase_up->addShaderFromSourceFile(QOpenGLShader::Vertex, ":/shaders/simple.vert");
     m_ShaderProgram_kawase_up->addShaderFromSourceFile(QOpenGLShader::Fragment, ":/shaders/dual_kawase_up.frag");
@@ -34,10 +32,10 @@ GLBlurFunctions::GLBlurFunctions()
     m_ShaderProgram_kawase_down->addShaderFromSourceFile(QOpenGLShader::Fragment, ":/shaders/dual_kawase_down.frag");
     m_ShaderProgram_kawase_down->link();
 
-    m_Buffer.create();
-    m_Buffer.bind();
-    m_Buffer.setUsagePattern(QOpenGLBuffer::StaticDraw);
-    m_Buffer.allocate(sg_vertexes, sizeof(sg_vertexes));
+    m_VertexBuffer.create();
+    m_VertexBuffer.bind();
+    m_VertexBuffer.setUsagePattern(QOpenGLBuffer::StaticDraw);
+    m_VertexBuffer.allocate(sg_vertexes, sizeof(sg_vertexes));
 
     m_VertexArrayObject.create();
     m_VertexArrayObject.bind();
@@ -48,7 +46,12 @@ GLBlurFunctions::GLBlurFunctions()
     m_ShaderProgram_kawase_down->enableAttributeArray(0);
     m_ShaderProgram_kawase_down->setAttributeBuffer(0, GL_FLOAT, Vertex::positionOffset(), Vertex::PositionTupleSize, Vertex::stride());
 
-    m_Texture = new QOpenGLTexture(QImage());
+    m_textureToBlur = new QOpenGLTexture(QImage());
+    m_textureToBlur->setWrapMode(QOpenGLTexture::ClampToEdge);
+    m_textureToBlur->setMinMagFilters(QOpenGLTexture::Linear, QOpenGLTexture::Linear);
+
+    m_iterations = -1;
+    m_imageToBlur = QImage();
 }
 
 GLBlurFunctions::~GLBlurFunctions()
@@ -56,80 +59,117 @@ GLBlurFunctions::~GLBlurFunctions()
     delete m_ShaderProgram_kawase_up;
     delete m_ShaderProgram_kawase_down;
 
-    for (int i = 0; i < m_FBO_vector.size(); i++)
-    {
+    for (int i = 0; i < m_FBO_vector.size(); i++) {
         delete m_FBO_vector[i];
     }
 
-    delete m_Texture;
+    delete m_textureToBlur;
 }
 
-QImage GLBlurFunctions::blurImage_kawase(QImage imageToBlur, int offset, int iterations)
+QImage GLBlurFunctions::blurImage_DualKawase(QImage imageToBlur, int offset, int iterations)
 {
-    for (int i = 0; i < m_FBO_vector.size(); i++)
-    {
-        delete m_FBO_vector[i];
+    // Check to avoid unnecessary texture reallocation
+    if (iterations != m_iterations || imageToBlur != m_imageToBlur) {
+        m_iterations = iterations;
+        m_imageToBlur = imageToBlur;
+
+        initFBOTextures();
     }
 
-    m_FBO_vector.clear();
-    m_FBO_vector.append(new QOpenGLFramebufferObject(imageToBlur.size(), QOpenGLFramebufferObject::CombinedDepthStencil, GL_TEXTURE_2D));
 
-    for (int i = 1; i <= iterations; i++)
-    {
-        m_FBO_vector.append(new QOpenGLFramebufferObject(m_FBO_vector[i - 1]->size() / 2, QOpenGLFramebufferObject::CombinedDepthStencil, GL_TEXTURE_2D));
+    //Don't record the texture and FBO allocation time
 
-        QOpenGLFunctions::glBindTexture(GL_TEXTURE_2D, m_FBO_vector.last()->texture());
-        QOpenGLFunctions::glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        QOpenGLFunctions::glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    }
 
-    //Creating m_Texture takes too much time. TODO: fix this
-    m_Texture = new QOpenGLTexture(imageToBlur.mirrored());
-    m_Texture->setWrapMode(QOpenGLTexture::ClampToEdge);
-    m_Texture->setMinMagFilters(QOpenGLTexture::Linear, QOpenGLTexture::Linear);
+    //Start the GPU timer
+    glGenQueries(1, GPUTimerQueries);
+    glBeginQuery(GL_TIME_ELAPSED, GPUTimerQueries[0]);
 
-    m_ShaderProgram_kawase_down->setUniformValue("offset", QVector2D(1 + offset, 1 + offset));
-    m_ShaderProgram_kawase_up->setUniformValue("offset", QVector2D(1 + offset, 1 + offset));
+    //Start the CPU timer
+    CPUTimer.start();
 
-    //Initial downsample    
-    renderToFBO(m_FBO_vector[1], m_Texture, m_ShaderProgram_kawase_down);
-    delete m_Texture;
+    // --------------- blur start ---------------
+
+    m_ShaderProgram_kawase_down->setUniformValue("offset", QVector2D(offset, offset));
+    m_ShaderProgram_kawase_up->setUniformValue("offset", QVector2D(offset, offset));
+
+    //Initial downsample
+    //We only need this helper texture because we can't put a QImage into the texture of a QOpenGLFramebufferObject
+    //Otherwise we would skip this and start the downsampling from m_FBO_vector[0] instead of m_FBO_vector[1]
+    renderToFBO(m_FBO_vector[1], m_textureToBlur->textureId(), m_ShaderProgram_kawase_down);
 
     //Downsample
-    for (int i = 2; i <= iterations; i++)
-    {
-        renderToFBO(m_FBO_vector[i], m_FBO_vector[i - 1]->texture(), m_ShaderProgram_kawase_down);
+    for (int i = 1; i < iterations; i++) {
+        renderToFBO(m_FBO_vector[i + 1], m_FBO_vector[i]->texture(), m_ShaderProgram_kawase_down);
     }
 
     //Upsample
-    for (int i = iterations - 1; i >= 0; i--)
-    {
-        renderToFBO(m_FBO_vector[i], m_FBO_vector[i + 1]->texture(), m_ShaderProgram_kawase_up);
+    for (int i = iterations; i > 0; i--) {
+        renderToFBO(m_FBO_vector[i - 1], m_FBO_vector[i]->texture(), m_ShaderProgram_kawase_up);
     }
 
+    // --------------- blur end ---------------
+
+    //Get the CPU timer result
+    CPUTimerElapsedTime = CPUTimer.nsecsElapsed();
+
+    //Get the GPU timer result
+    glEndQuery(GL_TIME_ELAPSED);
+    GPUTimerAvailable = 0;
+
+    while (!GPUTimerAvailable) {
+        glGetQueryObjectiv(GPUTimerQueries[0], GL_QUERY_RESULT_AVAILABLE, &GPUTimerAvailable);
+    }
+
+    glGetQueryObjectui64v(GPUTimerQueries[0], GL_QUERY_RESULT, &GPUtimerElapsedTime);
+    glDeleteQueries(1, GPUTimerQueries);
+
     return m_FBO_vector[0]->toImage();
-}
-
-void GLBlurFunctions::renderToFBO(QOpenGLFramebufferObject *targetFBO, QOpenGLTexture *sourceTexture, QOpenGLShaderProgram *shader)
-{
-    targetFBO->bind();
-    sourceTexture->bind();
-    shader->bind();
-
-    shader->setUniformValue("iResolution", QVector2D(targetFBO->size().width(), targetFBO->size().height()));
-
-    glClear(GL_COLOR_BUFFER_BIT);
-    glDrawArrays(GL_TRIANGLE_FAN, 0, sizeof(sg_vertexes) / sizeof(sg_vertexes[0]));
 }
 
 void GLBlurFunctions::renderToFBO(QOpenGLFramebufferObject *targetFBO, GLuint sourceTexture, QOpenGLShaderProgram *shader)
 {
     targetFBO->bind();
-    QOpenGLFunctions::glBindTexture(GL_TEXTURE_2D, sourceTexture);
+    glBindTexture(GL_TEXTURE_2D, sourceTexture);
     shader->bind();
 
     shader->setUniformValue("iResolution", QVector2D(targetFBO->size().width(), targetFBO->size().height()));
+    shader->setUniformValue("halfpixel", QVector2D(0.5 / targetFBO->size().width(), 0.5 / targetFBO->size().height()));
 
-    glClear(GL_COLOR_BUFFER_BIT);
     glDrawArrays(GL_TRIANGLE_FAN, 0, sizeof(sg_vertexes) / sizeof(sg_vertexes[0]));
+}
+
+void GLBlurFunctions::initFBOTextures()
+{
+    for (int i = 0; i < m_FBO_vector.size(); i++) {
+        delete m_FBO_vector[i];
+    }
+
+    m_FBO_vector.clear();
+    m_FBO_vector.append(new QOpenGLFramebufferObject(m_imageToBlur.size(), QOpenGLFramebufferObject::CombinedDepthStencil, GL_TEXTURE_2D));
+
+    for (int i = 1; i <= m_iterations; i++) {
+        m_FBO_vector.append(new QOpenGLFramebufferObject(m_imageToBlur.size() / qPow(2, i), QOpenGLFramebufferObject::CombinedDepthStencil, GL_TEXTURE_2D));
+
+        glBindTexture(GL_TEXTURE_2D, m_FBO_vector.last()->texture());
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    }
+
+    delete m_textureToBlur;
+
+    m_textureToBlur = new QOpenGLTexture(m_imageToBlur.mirrored(), QOpenGLTexture::DontGenerateMipMaps);
+    m_textureToBlur->setWrapMode(QOpenGLTexture::ClampToEdge);
+    m_textureToBlur->setMinMagFilters(QOpenGLTexture::Linear, QOpenGLTexture::Linear);
+}
+
+float GLBlurFunctions::getGPUTime()
+{
+    float gpuTime = GPUtimerElapsedTime / 1000000.;
+    return roundf(gpuTime * 1000) / 1000;
+}
+
+float GLBlurFunctions::getCPUTime()
+{
+    float cpuTime = CPUTimerElapsedTime / 1000000.;
+    return roundf(cpuTime * 1000) / 1000;
 }

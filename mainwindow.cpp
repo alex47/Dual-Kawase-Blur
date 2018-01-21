@@ -7,12 +7,12 @@ MainWindow::MainWindow(QWidget *parent) :
 {
     ui->setupUi(this);
 
-    offset = ui->sliderOffset->value();
+    offset = ui->spinBoxOffset->value();
     iterations = ui->spinBoxIterations->value();
 
     originalImage = QImage(":/img/lenna.png");
 
-    updateWindowImages();
+    updateShownImage();
 }
 
 MainWindow::~MainWindow()
@@ -20,51 +20,55 @@ MainWindow::~MainWindow()
     delete ui;
 }
 
-
-void MainWindow::on_sliderOffset_valueChanged(int value)
+void MainWindow::on_buttonOpenFile_clicked()
 {
-    offset = value;
+    QString fileName = QFileDialog::getOpenFileName(this, tr("Open Image"), "", tr("Image Files (*.png *.jpg *.bmp)"));
 
-    timer.start();
-    ui->labelBlurredImage->setPixmap(QPixmap::fromImage(GLBluring.blurImage_kawase(shownImage, offset, iterations)));
-    ui->labelRenderTime->setText(QString::number(timer.nsecsElapsed() / 1000000.) + " ms");
+    if (!fileName.isEmpty()) {
+        QImageReader reader(fileName);
+
+        if (reader.canRead()) {
+            originalImage = QImage(fileName);
+            updateShownImage();
+        }
+    }
 }
 
 void MainWindow::resizeEvent(QResizeEvent *event)
 {
     QMainWindow::resizeEvent(event);
-    updateWindowImages();
+    updateShownImage();
 }
 
-void MainWindow::on_buttonOpenFile_clicked()
+void MainWindow::on_spinBoxOffset_valueChanged(int arg1)
 {
-    QString fileName = QFileDialog::getOpenFileName(this, tr("Open Image"), "", tr("Image Files (*.png *.jpg *.bmp)"));
-
-    if (!fileName.isEmpty())
-    {
-        QImageReader reader(fileName);
-        if (reader.canRead())
-        {
-            originalImage = QImage(fileName);
-            updateWindowImages();
-        }
-    }
+    offset = arg1;
+    showBlurredImage();
 }
 
 void MainWindow::on_spinBoxIterations_valueChanged(int arg1)
 {
     iterations = arg1;
-    timer.start();
-    ui->labelBlurredImage->setPixmap(QPixmap::fromImage(GLBluring.blurImage_kawase(shownImage, offset, iterations)));
-    ui->labelRenderTime->setText(QString::number(timer.nsecsElapsed() / 1000000.) + " ms");
+    showBlurredImage();
 }
 
-void MainWindow::updateWindowImages()
+void MainWindow::updateShownImage()
 {
-    shownImage = originalImage.scaled(ui->labelOriginalImage->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    shownImage = originalImage.scaled(ui->labelBlurredImage->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    showBlurredImage();
 
-    ui->labelOriginalImage->setPixmap(QPixmap::fromImage(shownImage));
-    timer.start();
-    ui->labelBlurredImage->setPixmap(QPixmap::fromImage(GLBluring.blurImage_kawase(shownImage, offset, iterations)));
-    ui->labelRenderTime->setText(QString::number(timer.nsecsElapsed() / 1000000.) + " ms");
+    QString textureSize(QString::number(shownImage.size().width()) + "x" + QString::number(shownImage.size().height()));
+    ui->labelTextureSize->setText(textureSize);
+}
+
+void MainWindow::showBlurredImage()
+{
+    if (iterations == 0) {
+        ui->labelBlurredImage->setPixmap(QPixmap::fromImage(shownImage));
+        return;
+    }
+
+    ui->labelBlurredImage->setPixmap(QPixmap::fromImage(GLBlurDualKawase.blurImage_DualKawase(shownImage, offset, iterations)));
+    ui->labelGPUTime->setText(QString::number(GLBlurDualKawase.getGPUTime()) + " ms");
+    ui->labelCPUTime->setText(QString::number(GLBlurDualKawase.getCPUTime()) + " ms");
 }
