@@ -16,7 +16,11 @@ GLBlurFunctions::GLBlurFunctions()
 
     m_Surface = new QOffscreenSurface();
     m_Surface->create();
-    m_Surface->setFormat(m_Context->format());
+
+    QSurfaceFormat surfaceFormat;
+    surfaceFormat.setVersion(3, 3);
+    surfaceFormat.setProfile(QSurfaceFormat::CoreProfile);
+    m_Surface->setFormat(surfaceFormat);
 
     m_Context->makeCurrent(m_Surface);
 
