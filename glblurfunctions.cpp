@@ -139,6 +139,7 @@ void GLBlurFunctions::renderToFBO(QOpenGLFramebufferObject *targetFBO, GLuint so
     shader->setUniformValue("iResolution", QVector2D(targetFBO->size().width(), targetFBO->size().height()));
     shader->setUniformValue("halfpixel", QVector2D(0.5 / targetFBO->size().width(), 0.5 / targetFBO->size().height()));
 
+    glViewport(0, 0, targetFBO->size().width(), targetFBO->size().height());
     glDrawArrays(GL_TRIANGLE_FAN, 0, sizeof(sg_vertexes) / sizeof(sg_vertexes[0]));
 }
 
